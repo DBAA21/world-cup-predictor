@@ -39,14 +39,41 @@ jobs:
 
       # Cloud auth — placeholder. Swap for aws-actions/configure-aws-credentials
       # or aliyun/setup-cli depending on the chosen provider (see design §2.1).
+      # Until a real cluster is provisioned, gate downstream steps behind the
+      # presence of a STAGING_KUBECONFIG secret so the workflow can be exercised
+      # end-to-end without failing on missing infra.
       - name: Configure cloud credentials
-        run: echo "::warning ::CHANGE_ME — wire cloud OIDC auth here"
+        id: kubeauth
+        env:
+          KUBECONFIG_B64: ${{ secrets.STAGING_KUBECONFIG }}
+        run: |
+          if [ -z "$KUBECONFIG_B64" ]; then
+            echo "::warning ::STAGING_KUBECONFIG not set — running chart-template dry-run only"
+            echo "configured=false" >> $GITHUB_OUTPUT
+          else
+            mkdir -p "$HOME/.kube"
+            echo "$KUBECONFIG_B64" | base64 -d > "$HOME/.kube/config"
+            echo "configured=true" >> $GITHUB_OUTPUT
+          fi
 
       - name: Setup kubectl + helm
         uses: azure/setup-helm@v4
       - uses: azure/setup-kubectl@v4
 
+      - name: helm template (dry-run validation)
+        if: steps.kubeauth.outputs.configured != 'true'
+        run: |
+          for svc in wcp-frontend wcp-java-api wcp-ml-api wcp-workers; do
+            echo "=== helm template $svc ==="
+            helm template $svc $CHART_DIR/$svc \
+              --namespace $NAMESPACE \
+              --set image.tag=${{ steps.tag.outputs.tag }} \
+              --set environment=staging > /dev/null
+          done
+          echo "::notice ::All 4 charts render OK; cluster deploy skipped (no STAGING_KUBECONFIG)"
+
       - name: helm upgrade --install
+        if: steps.kubeauth.outputs.configured == 'true'
         run: |
           for svc in wcp-frontend wcp-java-api wcp-ml-api wcp-workers; do
             helm upgrade --install $svc $CHART_DIR/$svc \
@@ -57,6 +84,7 @@ jobs:
           done
 
       - name: Smoke test
+        if: steps.kubeauth.outputs.configured == 'true'
         run: |
           BASE_URL="${{ vars.STAGING_BASE_URL }}"
           if [ -z "$BASE_URL" ]; then BASE_URL="https://staging.wcp.example"; fi
