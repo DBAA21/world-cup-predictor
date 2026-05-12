@@ -1,0 +1,52 @@
+name: terraform-validate
+
+# Static validation for the AWS Terraform stack: fmt + init -backend=false
+# + validate, for every module and every env. CI has no state bucket, so
+# the backend-init step is intentionally skipped via -backend=false.
+
+on:
+  pull_request:
+    paths:
+      - 'worldcup-predictor/deploy/terraform/**'
+      - '.github/workflows/terraform-validate.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'worldcup-predictor/deploy/terraform/**'
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: fmt + validate
+    runs-on: ubuntu-22.04
+    defaults:
+      run:
+        working-directory: worldcup-predictor/deploy/terraform
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.6.6
+
+      - name: terraform fmt -check
+        run: terraform fmt -check -recursive
+
+      - name: Validate modules
+        run: |
+          for d in modules/ecr modules/s3-bucket; do
+            echo "::group::$d"
+            (cd "$d" && terraform init -backend=false -input=false && terraform validate)
+            echo "::endgroup::"
+          done
+
+      - name: Validate envs
+        run: |
+          for d in envs/dev envs/demo global; do
+            echo "::group::$d"
+            (cd "$d" && terraform init -backend=false -input=false && terraform validate)
+            echo "::endgroup::"
+          done
